@@ -1,8 +1,14 @@
+import { migrateLibrary } from './personal-library';
 import { z } from 'zod';
+import { t } from './i18n';
 
 export const modeSchema = z.enum(['rewrite', 'translation', 'original']);
 export type Mode = z.infer<typeof modeSchema>;
-export const modeLabels: Record<Mode, string> = { rewrite: '乔木改写', translation: '中文翻译', original: '原文' };
+export function modeLabel(mode: Mode): string {
+  return t(mode === 'rewrite' ? 'mode.rewrite' : mode === 'translation' ? 'mode.translation' : 'mode.original');
+}
+export const readingThemeSchema = z.enum(['auto', 'light', 'paper', 'sage', 'mist', 'dark', 'black']);
+export type ReadingTheme = z.infer<typeof readingThemeSchema>;
 export const readingFontSchema = z.enum(['serif', 'sans', 'sourceHanSerif', 'sourceHanSans', 'wenkai', 'zhenkai', 'fangsong', 'custom']);
 export type ReadingFont = z.infer<typeof readingFontSchema>;
 const optionalText = z.string().nullish();
@@ -33,7 +39,7 @@ export const bundleSchema = z.object({ entry: entrySchema, rewrite: rewriteSchem
 export type Bundle = z.infer<typeof bundleSchema>;
 export const pageSchema = z.object({ entries: z.array(entrySchema), hasMore: z.boolean().optional(), nextCursor: z.string().nullish() });
 export const subscriptionSchema = z.object({
-  id: z.string(), url: z.string(), name: z.string(), group: z.string().default(''),
+id: z.string(), url: z.string(), name: z.string(), group: z.string().default(''),
   entries: z.array(entrySchema).default([]), updatedAt: z.number().default(0), error: z.string().default(''),
   etag: optionalText, lastModified: optionalText, paused: z.boolean().default(false),
   errorCount: z.number().int().default(0), lastErrorAt: z.number().default(0),
@@ -47,18 +53,26 @@ export const channelStateSchema = z.object({
 });
 export type ChannelState = z.infer<typeof channelStateSchema>;
 export const stateSchema = z.object({
+  libraryVersion: z.number().int().min(0).max(1).default(0),
+  subscriptionGroups: z.array(z.object({ id: z.string(), name: z.string(), order: z.number() })).default([]),
+  sourceMeta: z.record(z.string(), z.object({ groupId: z.string(), name: z.string().default(''), order: z.number().default(0) })).default({}),
+  collapsedGroups: z.array(z.string()).default([]),
   settings: z.object({
     baseUrl: z.string().default('https://rss.qiaomu.ai'), folder: z.string().default('Qiaomu RSS'),
     defaultMode: modeSchema.default('rewrite'), remoteImages: z.boolean().default(true), listWidth: z.number().min(220).max(520).default(300),
+    readingTheme: readingThemeSchema.catch('auto').default('auto'),
     fontSize: z.number().int().min(14).max(32).default(19), customFont: z.string().max(200).catch('').default(''), fontFamily: readingFontSchema.default('fangsong'),
     lineHeight: z.number().min(1.5).max(2.4).default(1.9), lineWidth: z.number().int().min(24).max(96).catch(36).default(36),
     selectionPopup: z.boolean().default(true), markdownFolders: z.array(z.string()).default([]), followedPodcasts: z.array(z.string()).default([]), podcastNames: z.record(z.string(), z.string()).default({}),
-    exportFolder: z.string().max(500).catch('').default(''), exportFilename: z.string().max(200).catch('{title} - {mode}.md').default('{title} - {mode}.md'),
-    exportAssetFolder: z.string().max(500).catch('{filename}.assets').default('{filename}.assets'), askBeforeSave: z.boolean().default(true),
-    lastSource: z.string().max(300).default(''),
-  }).default({ baseUrl: 'https://rss.qiaomu.ai', folder: 'Qiaomu RSS', defaultMode: 'rewrite', remoteImages: true, listWidth: 300,
-    fontSize: 19, fontFamily: 'fangsong', customFont: '', lineHeight: 1.9, lineWidth: 36, lastSource: '', selectionPopup: true, markdownFolders: [], followedPodcasts: [], podcastNames: {},
-    exportFolder: '', exportFilename: '{title} - {mode}.md', exportAssetFolder: '{filename}.assets', askBeforeSave: true }),
+readingTheme: readingThemeSchema.catch('auto').default('auto'),
+    fontSize: z.number().int().min(14).max(32).default(19), customFont: z.string().max(200).catch('').default(''), fontFamily: readingFontSchema.default('fangsong'),
+    lineHeight: z.number().min(1.5).max(2.4).default(1.9), lineWidth: z.number().int().min(24).max(96).catch(36).default(36),
+    selectionPopup: z.boolean().default(true), markdownFolders: z.array(z.string()).default([]), followedPodcasts: z.array(z.string()).default([]), podcastNames: z.record(z.string(), z.string()).default({}),
+    readLater: z.array(z.string()).default([]),
+    lastSource: z.string().max(300).default(''), articleFolder: z.string().default('Qiaomu RSS/文章'), pdfDirectory: z.string().default(''),
+  }).default({ baseUrl: 'https://rss.qiaomu.ai', folder: 'Qiaomu RSS', articleFolder: 'Qiaomu RSS/文章', pdfDirectory: '', defaultMode: 'rewrite', remoteImages: true, listWidth: 300,
+    readingTheme: 'auto', fontSize: 19, fontFamily: 'fangsong', customFont: '', lineHeight: 1.9, lineWidth: 36, lastSource: '', selectionPopup: true, markdownFolders: [], followedPodcasts: [], podcastNames: {},
+    readLater: [] }),
   readIds: z.array(z.string()).default([]), favorites: z.record(z.string(), bundleSchema).default({}),
   readLater: z.array(z.string()).default([]),
   readAt: z.record(z.string(), z.number()).default({}),
@@ -66,6 +80,8 @@ export const stateSchema = z.object({
   subscriptions: z.array(subscriptionSchema).default([]),
   channelStates: z.record(z.string(), channelStateSchema).catch({}).default({}),
   savedArticles: z.record(z.string(), bundleSchema).default({}),
+  // "<entry id>|<mode>" → vault path of the note that article was saved as.
+  articleNotes: z.record(z.string(), z.string()).catch({}).default({}),
   cache: z.record(z.string(), bundleSchema).default({}), updatedAt: z.number().default(0),
 });
 export type State = z.infer<typeof stateSchema>;
@@ -89,6 +105,7 @@ export function initialState(data: unknown): State {
   if (state.sources.some(source => source.id === last && source.category === 'podcast') && !state.settings.followedPodcasts.includes(last)) {
     state.settings.followedPodcasts.push(last);
   }
+  migrateLibrary(state);
   return state;
 }
 // Content-cache split: entry `content` (95% of persisted bytes) lives in a separate
@@ -147,19 +164,29 @@ export function safeUrl(value: string, base?: string): string | null {
 export function serviceUrl(value: string): string {
   const url = new URL(value.trim());
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname)) {
-    throw new Error('请输入 HTTPS 服务地址，不包含路径、账号或查询参数。');
+    throw new Error(t('error.serviceUrlInvalid'));
   }
   return url.origin;
 }
 export function folderPath(value: string): string {
   const segments = value.trim().replace(/\\/g, '/').split('/');
   if (!segments.length || segments.some(s => !s || s.startsWith('.') || /[:*?"<>|]/.test(s) || [...s].some(c => c.charCodeAt(0) < 32))) {
-    throw new Error('请输入库内文件夹名称，不包含隐藏目录、空段或特殊字符。');
+    throw new Error(t('error.folderNameInvalid'));
   }
   return segments.join('/');
 }
+export const articleNoteKey = (entryId: string, mode: Mode) => `${entryId}|${mode}`;
+/** Follows a renamed or moved note (or a folder containing notes) so saved-article links keep pointing at it. */
+export function renameArticleNotes(notes: Record<string, string>, oldPath: string, newPath: string): boolean {
+  let changed = false;
+  for (const [key, path] of Object.entries(notes)) {
+    if (path === oldPath) { notes[key] = newPath; changed = true; }
+    else if (path.startsWith(oldPath + '/')) { notes[key] = newPath + path.slice(oldPath.length); changed = true; }
+  }
+  return changed;
+}
 export function withServiceOrigin(state: State, baseUrl: string): State {
-  return initialState({ savedArticles: state.savedArticles, settings: { ...state.settings, baseUrl: serviceUrl(baseUrl) }, subscriptions: state.subscriptions,
+  return initialState({ savedArticles: state.savedArticles, articleNotes: state.articleNotes, settings: { ...state.settings, baseUrl: serviceUrl(baseUrl) }, subscriptions: state.subscriptions,
     favorites: Object.fromEntries(Object.entries(state.favorites).filter(([, bundle]) => bundle.entry.origin === 'local' || bundle.entry.origin === 'vault')),
     cache: Object.fromEntries(Object.entries(state.cache).filter(([, bundle]) => bundle.entry.origin === 'local' || bundle.entry.origin === 'vault')),
     readIds: state.readIds.filter(id => id.startsWith('local-') || id.startsWith('vault:')) });

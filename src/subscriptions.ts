@@ -1,3 +1,4 @@
+import { registerSource, ensureGroup } from './personal-library';
 import { requestUrl } from 'obsidian';
 import { feedUrl, MAX_SUBSCRIPTIONS, parseFeed, stableId, type FeedInput } from './feeds';
 import { subscriptionSchema, type State, type Subscription } from './model';
@@ -15,6 +16,15 @@ export function refreshBackoffMs(errorCount: number): number {
 }
 export class Subscriptions {
   private pending = new Map<string, Promise<{ outcome: RefreshOutcome; bodies: boolean }>>();
+  private mutations: Promise<unknown> = Promise.resolve();
+  private commit<T>(edit: () => T): Promise<T> {
+    const run = this.mutations.catch(() => undefined).then(async () => {
+      const state = this.state(), previous = structuredClone({ subscriptions: state.subscriptions, sourceMeta: state.sourceMeta, subscriptionGroups: state.subscriptionGroups, collapsedGroups: state.collapsedGroups, cache: state.cache });
+      try { const result = edit(); await this.persist(); return result; }
+      catch (error) { Object.assign(state, previous); throw error; }
+    });
+    this.mutations = run; return run;
+  }
   constructor(private state: () => State, private persist: () => Promise<void>, private transport: FeedTransport = async (url, headers) => {
     const response = await requestUrl({ url, method: 'GET', headers, throw: false });
     return { status: response.status, text: response.text, headers: response.headers };
@@ -27,57 +37,74 @@ export class Subscriptions {
       if (conditional?.lastModified) headers['If-Modified-Since'] = conditional.lastModified;
       const response = await Promise.race([
         this.transport(url, Object.keys(headers).length ? headers : undefined),
-        new Promise<never>((_, reject) => { timer = window.setTimeout(() => reject(new Error('订阅源响应超时，请重试。')), 20000); }),
+        new Promise<never>((_, reject) => { timer = window.setTimeout(() => reject(new Error(t('error.feedTimeout'))), 20000); }),
       ]);
       if (response.status === 304) return { name: '', entries: [], notModified: true as const, etag: conditional?.etag, lastModified: conditional?.lastModified };
-      if (response.status < 200 || response.status >= 300) throw new Error(`订阅源暂不可用（HTTP ${response.status}）。`);
+      if (response.status < 200 || response.status >= 300) throw new Error(t('error.feedUnavailable', { status: response.status }));
       const parsed = await parseFeed(response.text, url, doc);
       return { ...parsed, notModified: false as const, etag: headerValue(response.headers, 'etag'), lastModified: headerValue(response.headers, 'last-modified') };
     } catch (error) {
-      // Do not include transport errors: private feed URLs can contain access tokens.
-      if (error instanceof Error && /^(订阅源|文件超过|不支持包含|XML 格式|这个地址)/.test(error.message)) throw error;
-      throw new Error('无法读取订阅源，请检查地址和网络。');
+      if (isLocalizedError(error)) throw error;
+      fail('error.feedUnreadable');
     } finally { window.clearTimeout(timer); }
   }
   async add(raw: string, group: string, doc: Document): Promise<Subscription> {
     const url = feedUrl(raw);
-    if (this.state().subscriptions.some(feed => feed.url === url)) throw new Error('这个订阅源已经添加。');
-    if (this.state().subscriptions.length >= MAX_SUBSCRIPTIONS) throw new Error(`最多添加 ${MAX_SUBSCRIPTIONS} 个订阅源。`);
+    if (this.state().subscriptions.some(feed => feed.url === url)) fail('error.feedDuplicate');
+    if (this.state().subscriptions.length >= MAX_SUBSCRIPTIONS) fail('error.feedLimit', { n: MAX_SUBSCRIPTIONS });
     const parsed = await this.fetch(url, doc);
     const feed = subscriptionSchema.parse({ id: `local:${await stableId(url)}`, url, name: parsed.name, group: group.trim().slice(0, 100), entries: parsed.entries, updatedAt: Date.now(), etag: parsed.etag, lastModified: parsed.lastModified });
-    // Recheck after the network request, including concurrently submitted duplicate URLs.
-    if (this.state().subscriptions.some(item => item.url === url)) throw new Error('这个订阅源已经添加。');
-    if (this.state().subscriptions.length >= MAX_SUBSCRIPTIONS) throw new Error(`最多添加 ${MAX_SUBSCRIPTIONS} 个订阅源。`);
-    this.state().subscriptions.push(feed); await this.persist(); return feed;
+    return this.commit(() => {
+      if (this.state().subscriptions.some(item => item.url === url)) fail('error.feedDuplicate');
+      if (this.state().subscriptions.length >= MAX_SUBSCRIPTIONS) fail('error.feedLimit', { n: MAX_SUBSCRIPTIONS });
+      this.state().subscriptions.push(feed); registerSource(this.state(), feed.id, feed.group); return feed;
+    });
   }
+
   async import(feeds: FeedInput[]): Promise<number> {
     const prepared = await Promise.all(feeds.map(async input => {
       const url = feedUrl(input.url);
       return subscriptionSchema.parse({ ...input, url, id: `local:${await stableId(url)}` });
     }));
-    const existing = new Set(this.state().subscriptions.map(feed => feed.url));
-    const additions = prepared.filter(feed => { if (existing.has(feed.url)) return false; existing.add(feed.url); return true; });
-    if (this.state().subscriptions.length + additions.length > MAX_SUBSCRIPTIONS) throw new Error(`导入后超过 ${MAX_SUBSCRIPTIONS} 个订阅源，请减少导入数量。`);
-    this.state().subscriptions.push(...additions); await this.persist(); return additions.length;
+    return this.commit(() => {
+      const existing = new Set(this.state().subscriptions.map(feed => feed.url));
+      const additions = prepared.filter(feed => { if (existing.has(feed.url)) return false; existing.add(feed.url); return true; });
+      if (this.state().subscriptions.length + additions.length > MAX_SUBSCRIPTIONS) fail('error.importLimit', { n: MAX_SUBSCRIPTIONS });
+      this.state().subscriptions.push(...additions); for (const feed of additions) registerSource(this.state(), feed.id, feed.group);
+      if (additions.length > 60) {
+        const state = this.state();
+        state.collapsedGroups = [...new Set([...state.collapsedGroups, ...additions.map(feed => state.sourceMeta[feed.id].groupId).filter(Boolean)])];
+      }
+      return additions.length;
+    });
   }
   async edit(id: string, name: string, group: string) {
-    const feed = this.state().subscriptions.find(item => item.id === id); if (!feed) return;
-    if (!name.trim()) throw new Error('订阅名称不能为空。');
-    feed.name = name.trim().slice(0, 200); feed.group = group.trim().slice(0, 100); await this.persist();
+    await this.commit(() => {
+      const feed = this.state().subscriptions.find(item => item.id === id); if (!feed) return;
+      if (!name.trim()) fail('error.feedNameEmpty');
+      feed.name = name.trim().slice(0, 200); feed.group = group.trim().slice(0, 100); registerSource(this.state(), id, feed.group); this.state().sourceMeta[id].groupId = ensureGroup(this.state(), feed.group);
+    });
   }
   async remove(id: string) {
-    const state = this.state(); state.subscriptions = state.subscriptions.filter(feed => feed.id !== id);
-    for (const [key, bundle] of Object.entries(state.cache)) if (bundle.entry.sourceId === id) delete state.cache[key];
-    // Favorites are independent snapshots, and links already added to Daily Notes are never removed.
-    await this.persist();
+    await this.commit(() => {
+      const state = this.state(); delete state.sourceMeta[id]; state.subscriptions = state.subscriptions.filter(feed => feed.id !== id);
+      for (const [key, bundle] of Object.entries(state.cache)) if (bundle.entry.sourceId === id) delete state.cache[key];
+    });
   }
   async setPaused(id: string, paused: boolean): Promise<void> {
-    const feed = this.state().subscriptions.find(item => item.id === id); if (!feed) return;
-    if (feed.paused !== paused) { feed.paused = paused; await this.persist(); }
+    await this.commit(() => {
+      const feed = this.state().subscriptions.find(item => item.id === id); if (!feed) return;
+      if (feed.paused !== paused) { feed.paused = paused; }
+    });
+  }
+
+  async refresh(ids: string[], doc: Document, force = false, updated?: () => void): Promise<void> {
+    const remaining = [...ids];
+    const worker = async () => { while (remaining.length) { const id = remaining.shift(); if (id) { await this.refreshOne(id, doc, force); updated?.(); } } };
+    await Promise.all(Array.from({ length: Math.min(3, remaining.length) }, worker));
   }
   async refresh(ids: string[], doc: Document, force = false, updated?: (done: number, total: number) => void): Promise<RefreshSummary> {
     const started = Date.now();
-    // Stale-first: oldest update first, previously-failed last, so fresh content paints early.
     const feeds = new Map(this.state().subscriptions.map(feed => [feed.id, feed]));
     const remaining = ids.filter(id => feeds.has(id)).sort((a, b) => {
       const fa = feeds.get(a)!, fb = feeds.get(b)!;
@@ -130,7 +157,7 @@ export class Subscriptions {
         return { outcome: 'changed', bodies: true };
       } catch (error) {
         if (!this.state().subscriptions.includes(feed)) return skip;
-        feed.error = error instanceof Error ? error.message : '订阅源无法读取。';
+        feed.error = error instanceof Error ? error.message : t('error.feedUnreadableShort');
         feed.errorCount += 1; feed.lastErrorAt = Date.now();
         return { outcome: 'failed', bodies: false };
       }
