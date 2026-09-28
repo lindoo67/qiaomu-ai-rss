@@ -1,9 +1,9 @@
 import { migrateLibrary, moveSources, registerSource } from './personal-library';
 import { EditorView } from '@codemirror/view';
-import { MarkdownView, Notice, Plugin, PluginSettingTab, TFile, type App, type SettingDefinitionItem, type SettingGroupItem } from 'obsidian';
+import { MarkdownView, Notice, Plugin, PluginSettingTab, TFile, type App, type SettingDefinitionItem, type SettingGroupItem, Setting, ButtonComponent } from 'obsidian';
 import { requestUrl } from 'obsidian';
 import { RssApi } from './api';
-import { folderPath, initialState, renameArticleNotes, modeLabel, modeSchema, readingFontSchema, readingThemeSchema, type Bundle, type Entry, type Mode, type State, splitContentCache, attachContentCache } from './model';
+import { folderPath, initialState, renameArticleNotes, modeLabel, modeSchema, readingFontSchema, readingThemeSchema, type Bundle, type Entry, type Mode, type State, splitContentCache, attachContentCache, stripFeedBodies } from './model';
 import { cleanCaptureMarkers, repairArticleLinks, appendDailyNoteLink, dailyNotePath, readDailyNoteSettings, renderDailyNoteTemplate } from './daily-note';
 import { ReaderView, VIEW_TYPE } from './view';
 import { contextProvider } from './agent-bridge';
@@ -16,6 +16,7 @@ import { LocalImages } from './images';
 import { Subscriptions } from './subscriptions';
 import { RETIRED_VIEW_TYPES, RetiredView, SubscriptionCenter, type CenterTab } from './subscription-center';
 import { t } from './i18n';
+import { SourceHealthModal } from './source-health';
 import { articleFolderPath } from './vault-export';
 
 export default class QiaomuRssPlugin extends Plugin {
@@ -42,7 +43,24 @@ export default class QiaomuRssPlugin extends Plugin {
     const data: unknown = await this.loadData();
     try { this.state = initialState(data); }
 catch { new Notice(t('notice.dataUnreadable')); throw new Error('Incompatible RSS data'); }
+    if (data && typeof data === 'object' && !('libraryVersion' in data)) {
+      const backup = `${this.app.vault.configDir}/plugins/${this.manifest.id}/data-before-library-v1.json`;
+      if (!await this.app.vault.adapter.exists(backup)) await this.app.vault.adapter.write(backup, JSON.stringify(data));
+      await this.persist();
+    }
+    this.images = new LocalImages(this.app.vault, `${this.app.vault.configDir}/plugins/${this.manifest.id}/image-cache`);
+    registerImageDrops(this);
+    this.subscriptions = new Subscriptions(() => this.state, () => this.persist().then(() => { this.refreshDiscovery(); this.refreshPersonalViews(); }));
+    this.addCommand({ id: 'manage-subscriptions', name: t('cmd.manageSubscriptions'), callback: () => this.manageSubscriptions() });
+    this.addCommand({ id: 'source-health', name: t('cmd.sourceHealth'), callback: () => this.openSourceHealth() });
     this.addSettingTab(new RssSettings(this.app, this));
+    this.registerView(VIEW_TYPE, leaf => new ReaderView(leaf, this));
+    for (const type of RETIRED_VIEW_TYPES) this.registerView(type, leaf => new RetiredView(leaf, type));
+    const retire = () => { for (const type of RETIRED_VIEW_TYPES) for (const leaf of this.app.workspace.getLeavesOfType(type)) leaf.detach(); };
+    this.app.workspace.onLayoutReady(() => { retire(); window.setTimeout(retire, 500); });
+    this.addCommand({ id: 'explore-subscriptions', name: t('cmd.exploreSubscriptions'), callback: () => { void this.openDiscovery(); } });
+    this.addRibbonIcon('rss', t('cmd.openReader'), () => { void this.openReader(); });
+    this.addCommand({ id: 'open-reader', name: t('cmd.openReader'), callback: () => { void this.openReader(); } });
     this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
       if (renameArticleNotes(this.state.articleNotes, oldPath, file.path)) void this.persist();
       if (!this.state.settings.markdownFolders.some(path => path === oldPath || path.startsWith(oldPath + '/'))) return;
@@ -413,7 +431,7 @@ this.saving = this.saving.catch(() => undefined).then(() => this.saveData(this.s
   }
 }
 class RssSettings extends PluginSettingTab {
-  private section: 'reading' | 'sources' | 'excerpt' | 'about' = 'reading';
+  private section: 'reading' | 'sources' | 'excerpt' | 'storage' | 'about' = 'reading';
   constructor(app: App, private plugin: QiaomuRssPlugin) { super(app, plugin); this.containerEl.addClass('qrs-settings'); }
   getSettingDefinitions(): SettingDefinitionItem[] {
     const settings = this.plugin.state.settings;
@@ -470,11 +488,8 @@ class RssSettings extends PluginSettingTab {
       ] },
 { name: t('settings.subscriptions.name'), desc: t('settings.subscriptions.desc'), render: setting => {
         setting.addButton(button => button.setButtonText(t('settings.manageSubscriptions')).onClick(() => { (this.app as App & { setting: { close(): void } }).setting.close(); this.plugin.manageSubscriptions(); }));
+        setting.addButton(button => button.setButtonText(t('settings.sourceHealth')).onClick(() => { this.plugin.openSourceHealth(); }));
       } },
-      { type: 'group', heading: t('settings.groupSaveExport'), items: [
-        folderSetting(t('settings.articleFolder.name'), t('note.folderHint'), 'articleFolder'),
-        folderSetting(t('settings.opmlFolder.name'), t('settings.opmlFolder.desc'), 'folder'),
-      ] },
       { name: t('settings.defaultMode'), render: setting => {
         setting.addDropdown(drop => {
           for (const value of modeSchema.options) drop.addOption(value, modeLabel(value));
@@ -488,6 +503,22 @@ class RssSettings extends PluginSettingTab {
           settings.remoteImages = value; await this.plugin.persist(); this.plugin.resetViews();
         }));
       } },
+      { type: 'group', heading: t('settings.groupExport'), items: [
+        { name: t('settings.exportFolder.name'), desc: t('settings.exportFolder.desc'), render: setting => {
+          setting.addText(text => text.setPlaceholder('Reading/{source}/{date}').setValue(settings.exportFolder).onChange(async value => { settings.exportFolder = value.trim().slice(0, 500); await this.plugin.persist(); }))
+            .addButton(button => button.setButtonText(t('settings.choose')).onClick(() => new VaultFolderPicker(this.app, folder => { settings.exportFolder = folder.path === '/' ? '' : folder.path; void this.plugin.persist(); this.update(); }).open()));
+        } },
+        { name: t('settings.exportFilename.name'), desc: t('settings.exportFilename.desc'), render: setting => {
+          setting.addText(text => text.setPlaceholder('{title} - {mode}.md').setValue(settings.exportFilename).onChange(async value => { settings.exportFilename = (value.trim() || '{title} - {mode}.md').slice(0, 200); await this.plugin.persist(); }));
+        } },
+        { name: t('settings.exportAssetFolder.name'), desc: t('settings.exportAssetFolder.desc'), render: setting => {
+          setting.addText(text => text.setPlaceholder('{filename}.assets').setValue(settings.exportAssetFolder).onChange(async value => { settings.exportAssetFolder = (value.trim() || '{filename}.assets').slice(0, 500); await this.plugin.persist(); }))
+            .addButton(button => button.setButtonText(t('settings.choose')).onClick(() => new VaultFolderPicker(this.app, folder => { settings.exportAssetFolder = folder.path === '/' ? '{filename}.assets' : `${folder.path}/{filename}`; void this.plugin.persist(); this.update(); }).open()));
+        } },
+        { name: t('settings.askBeforeSave.name'), desc: t('settings.askBeforeSave.desc'), render: setting => {
+          setting.addToggle(toggle => toggle.setValue(settings.askBeforeSave).onChange(async value => { settings.askBeforeSave = value; await this.plugin.persist(); }));
+        } },
+      ] },
 { type: 'group', heading: t('settings.groupVersion'), items: [
         { name: t('settings.currentVersion', { version: this.plugin.manifest.version }), desc: t('settings.currentVersion.desc'), render: setting => {
           setting.addButton(button => button.setButtonText(t('settings.manageUpdates')).onClick(() => this.plugin.openSettings('community-plugins')));
@@ -500,16 +531,65 @@ class RssSettings extends PluginSettingTab {
         } },
       ] },
 { name: t('settings.localData.name'), desc: t('settings.localData.desc') },
+      { type: 'group', heading: t('settings.groupStorage'), items: [
+        { name: t('settings.storageStats.name'), desc: t('settings.storageStats.desc'), render: setting => {
+          const el = setting.descEl.createDiv({ text: t('settings.storageLoading') || '计算中…' });
+          void this.plugin.storageStats().then(stats => {
+            const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)} MB`;
+            const parts = [`配置 ${mb(stats.dataJson)}`, `正文缓存 ${mb(stats.cacheJson)}`];
+            if (stats.images.files) parts.push(`图片 ${stats.images.files} 张 ${mb(stats.images.bytes)}`);
+            if (stats.bodyTotal) parts.push(`内存正文 ${mb(stats.bodyTotal)}`);
+            el.setText(parts.join(' · '));
+          }).catch(() => el.setText(t('settings.storageError') || '读取失败。'));
+        } },
+        { name: t('settings.clearImages.name'), desc: t('settings.clearImages.desc'), render: setting => {
+          setting.addButton(button => button.setButtonText(t('settings.clearImages.button')).onClick(() => {
+            void this.plugin.clearImages().then(result => { new Notice(t('settings.clearImages.cleared', { n: result.files })); this.update(); });
+          }));
+        } },
+        { name: t('settings.clearBodies.name'), desc: t('settings.clearBodies.desc'), render: setting => {
+          let armed = false;
+          setting.addButton(button => button.setButtonText(t('settings.clearBodies.button')).onClick(() => {
+            if (!armed) { armed = true; button.setButtonText(t('settings.clearBodies.confirmed')); return; }
+            armed = false;
+            void this.plugin.clearAllBodies().then(result => { new Notice(t('settings.clearBodies.cleared', { n: result.freedCount })); this.update(); });
+          }));
+        } },
+        { name: t('settings.clearSourceBodies.name'), desc: t('settings.clearSourceBodies.desc'), render: setting => {
+          const el = setting.descEl.createDiv({ text: '…' });
+          void this.plugin.storageStats().then(stats => {
+            el.empty();
+            const items = el.createDiv({ cls: 'qrs-clear-source-items' });
+            for (const source of stats.perSource.slice(0, 8)) {
+              if (!source.bodyCount) continue;
+              const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)} MB`;
+              const row = items.createDiv({ cls: 'qrs-clear-source-row' });
+              row.createEl('span', { text: `${source.name} (${mb(source.bodyBytes)}, ${source.bodyCount} 篇)`, cls: 'qrs-clear-source-label' });
+              let armed = false;
+              const button = new ButtonComponent(row).setButtonText('清理').onClick(() => {
+                if (!armed) { armed = true; button.setButtonText('确认？'); return; }
+                armed = false;
+                void this.plugin.clearSourceBodies(source.id).then(result => {
+                  new Notice(`已清理 ${source.name} 的 ${result.freedCount} 篇正文`);
+                  this.update();
+                });
+              });
+            }
+            if (!el.textContent) el.createDiv({ text: '暂无可清理的正文数据', cls: 'qrs-clear-empty' });
+          });
+        } },
+      ] },
     ];
     const reading = definitions[0];
     if (!('type' in reading) || reading.type !== 'group') return definitions;
     const excerpt = reading.items!.shift()!;
     reading.heading = t('settings.tab.reading');
     const buckets: Record<string, SettingDefinitionItem[]> = {
-      reading: [reading, definitions[4], definitions[5]],
-      sources: [definitions[2], definitions[1]],
-      excerpt: [definitions[3], excerpt, definitions[7]],
-      about: [definitions[6], ...([
+      reading: [reading, definitions[3], definitions[4]],
+      sources: [definitions[1], definitions[2]],
+      excerpt: [excerpt, definitions[5]],
+      storage: [definitions[8]],
+      about: [definitions[7], definitions[6], ...([
         [t('about.reportBug'), t('about.reportBug.desc'), 'https://github.com/joeseesun/qiaomu-ai-rss/issues/new'],
         [t('about.email'), 'vista8@gmail.com', 'mailto:vista8@gmail.com'],
         [t('about.guide'), t('about.guide.desc'), 'https://github.com/joeseesun/qiaomu-ai-rss#readme'],
@@ -530,7 +610,7 @@ class RssSettings extends PluginSettingTab {
       } },
       { name: t('about.license'), desc: t('about.license.desc') }],
     };
-    const tabLabels: Record<string, string> = { reading: t('settings.tab.reading'), sources: t('settings.tab.sources'), excerpt: t('settings.tab.excerpt'), about: t('settings.tab.about') };
+    const tabLabels: Record<string, string> = { reading: t('settings.tab.reading'), sources: t('settings.tab.sources'), excerpt: t('settings.tab.excerpt'), storage: t('settings.tab.storage'), about: t('settings.tab.about') };
     return [{ name: 'Qiaomu AI RSS', searchable: false, render: setting => {
       setting.settingEl.addClass('qrs-settings-header');
       // Obsidian reuses the setting row when definitions update.

@@ -110,7 +110,8 @@ export async function parseFeed(xml: string, url: string, doc: Document): Promis
     const published = (atom ? text(item, 'published') || text(item, 'updated') : text(item, 'pubDate') || text(item, 'date')) || '';
     const identity = (atom ? text(item, 'id') : text(item, 'guid')) || link || `${title}\n${published}`;
     const contentBase = contentNode && hasXmlBase(contentNode) ? baseUrl(contentNode, url) : link || base;
-pre.push({ item, link, title, published, raw, base, contentBase, author, identity });
+    const author = atom ? text(child(item, 'author') || root, 'name') : text(item, 'creator') || text(item, 'author');
+    pre.push({ item, link, title, published, raw, base, contentBase, author, identity });
   }
   // Phase 2: hash all identities in parallel (was 200 sequential crypto awaits).
   // Identity strings are byte-identical to before, so existing ids/readIds/favorites keep working.

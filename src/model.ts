@@ -7,6 +7,7 @@ export type Mode = z.infer<typeof modeSchema>;
 export function modeLabel(mode: Mode): string {
   return t(mode === 'rewrite' ? 'mode.rewrite' : mode === 'translation' ? 'mode.translation' : 'mode.original');
 }
+export const modeLabels: Record<Mode, string> = { rewrite: '改写', translation: '译文', original: '原文' };
 export const readingThemeSchema = z.enum(['auto', 'light', 'paper', 'sage', 'mist', 'dark', 'black']);
 export type ReadingTheme = z.infer<typeof readingThemeSchema>;
 export const readingFontSchema = z.enum(['serif', 'sans', 'sourceHanSerif', 'sourceHanSans', 'wenkai', 'zhenkai', 'fangsong', 'custom']);
@@ -39,7 +40,7 @@ export const bundleSchema = z.object({ entry: entrySchema, rewrite: rewriteSchem
 export type Bundle = z.infer<typeof bundleSchema>;
 export const pageSchema = z.object({ entries: z.array(entrySchema), hasMore: z.boolean().optional(), nextCursor: z.string().nullish() });
 export const subscriptionSchema = z.object({
-id: z.string(), url: z.string(), name: z.string(), group: z.string().default(''),
+id: z.string(), url: z.string(), name: z.string(), group: z.string().default(''), site: z.string().optional(), image: z.string().optional(),
   entries: z.array(entrySchema).default([]), updatedAt: z.number().default(0), error: z.string().default(''),
   etag: optionalText, lastModified: optionalText, paused: z.boolean().default(false),
   errorCount: z.number().int().default(0), lastErrorAt: z.number().default(0),
@@ -64,15 +65,13 @@ export const stateSchema = z.object({
     fontSize: z.number().int().min(14).max(32).default(19), customFont: z.string().max(200).catch('').default(''), fontFamily: readingFontSchema.default('fangsong'),
     lineHeight: z.number().min(1.5).max(2.4).default(1.9), lineWidth: z.number().int().min(24).max(96).catch(36).default(36),
     selectionPopup: z.boolean().default(true), markdownFolders: z.array(z.string()).default([]), followedPodcasts: z.array(z.string()).default([]), podcastNames: z.record(z.string(), z.string()).default({}),
-readingTheme: readingThemeSchema.catch('auto').default('auto'),
-    fontSize: z.number().int().min(14).max(32).default(19), customFont: z.string().max(200).catch('').default(''), fontFamily: readingFontSchema.default('fangsong'),
-    lineHeight: z.number().min(1.5).max(2.4).default(1.9), lineWidth: z.number().int().min(24).max(96).catch(36).default(36),
-    selectionPopup: z.boolean().default(true), markdownFolders: z.array(z.string()).default([]), followedPodcasts: z.array(z.string()).default([]), podcastNames: z.record(z.string(), z.string()).default({}),
     readLater: z.array(z.string()).default([]),
     lastSource: z.string().max(300).default(''), articleFolder: z.string().default('Qiaomu RSS/文章'), pdfDirectory: z.string().default(''),
+    exportFolder: z.string().max(500).catch('').default(''), exportFilename: z.string().max(200).catch('{title} - {mode}.md').default('{title} - {mode}.md'),
+    exportAssetFolder: z.string().max(500).catch('{filename}.assets').default('{filename}.assets'), askBeforeSave: z.boolean().default(true),
   }).default({ baseUrl: 'https://rss.qiaomu.ai', folder: 'Qiaomu RSS', articleFolder: 'Qiaomu RSS/文章', pdfDirectory: '', defaultMode: 'rewrite', remoteImages: true, listWidth: 300,
     readingTheme: 'auto', fontSize: 19, fontFamily: 'fangsong', customFont: '', lineHeight: 1.9, lineWidth: 36, lastSource: '', selectionPopup: true, markdownFolders: [], followedPodcasts: [], podcastNames: {},
-    readLater: [] }),
+    readLater: [], exportFolder: '', exportFilename: '{title} - {mode}.md', exportAssetFolder: '{filename}.assets', askBeforeSave: true }),
   readIds: z.array(z.string()).default([]), favorites: z.record(z.string(), bundleSchema).default({}),
   readLater: z.array(z.string()).default([]),
   readAt: z.record(z.string(), z.number()).default({}),

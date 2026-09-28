@@ -9,10 +9,9 @@ import { enableImageDrag, prepareMarkdownImageDrags } from './image-drag';
 import { SelectionCapture } from './selection';
 import { readingFonts, selectableFonts, fontFamily } from './fonts';
 import { articleFragment } from './content';
-import { saveArticlePdf } from './desktop-export';
+import { saveArticleMarkdown, saveArticlePdf } from './desktop-export';
 import { saveArticleToVault } from './vault-export';
 import { exportBaseName } from './article-export';
-import { NoteLocationModal } from './note-location';
 import { cleanExcerpt } from './excerpt';
 import { AudioDock, pauseVideos, renderMedia, stopMedia, youtubeEmbedUrl } from './media';
 import { sameRemoteContent, uniqueRemoteEntries, wechatArticleKey, xiaoyuzhouEpisodeKey } from './wechat-articles';
@@ -532,7 +531,7 @@ if (this.filter === 'later') {
       const order = new Map(state.readLater.map((id, i) => [id, i] as const));
       return entries.filter(e => order.has(e.id)).sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
     }
-    const query = this.query.trim().toLocaleLowerCase();
+    const query = this.query.trim().toLocaleLowerCase(), group = this.qiaomuGroupIds();
     return uniqueRemoteEntries(entries, this.bundle?.entry.id).filter(entry => (this.vaultScope() ? entry.origin === 'vault' && entry.sourceId === this.source : this.personalScope()
       ? entry.origin === 'local' && (this.source === '@local' || this.selectedFeeds().some(feed => feed.id === entry.sourceId))
       : entry.origin !== 'local' && entry.origin !== 'vault' && (!this.source || (this.source.startsWith('@qiaomu:') ? group.has(entry.sourceId) : entry.sourceId === this.source))) &&
@@ -605,6 +604,7 @@ const scroll = this.list.scrollTop; this.list.empty(); this.listSentinelObserver
     if (!entries.length) this.list.createDiv({ cls: 'qrs-empty', text: this.loading ? '正在获取文章…' : this.filter === 'favorites' ? '收藏喜欢的文章，在这里慢慢读。' : this.personalScope() && !this.entries.length ? '还没有文章。点击 + 添加订阅，或点击刷新获取文章。' : '暂无匹配文章，试试其他频道或筛选。' });
     // Windowed rendering: only the first `renderedCount` rows enter the DOM.
     const shown = entries.slice(0, this.renderedCount);
+    const mixed = new Set(shown.map(entry => entry.sourceId)).size > 1;
     for (const entry of shown) {
       const relatedIds = this.relatedContentIds(entry);
       const read = relatedIds.some(id => this.plugin.state.readIds.includes(id));
@@ -861,10 +861,6 @@ const readButton = this.addIconButton(actions, read ? 'circle-check' : 'circle',
       menu.addItem(item => item.setTitle(t('reader.reloadArticle')).setIcon('refresh-cw').onClick(() => { void this.openArticle(bundle.entry); }));
       menu.addSeparator();
       if (savedNote) menu.addItem(item => item.setTitle(t('reader.saveAnotherNote')).setIcon('file-plus').onClick(() => this.saveNote(bundle, mode)));
-      menu.addItem(item => item.setTitle(t('reader.saveNoteTo')).setIcon('folder').onClick(() => {
-        new NoteLocationModal(this.app, this.plugin.state.settings.articleFolder, exportBaseName(bundle, mode),
-          (folder, remember) => this.saveNoteAt(bundle, mode, folder, remember)).open();
-      }));
       if (Platform.isDesktopApp) {
         menu.addSeparator();
         const mode = this.mode;

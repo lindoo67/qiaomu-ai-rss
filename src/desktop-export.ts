@@ -22,7 +22,25 @@ function desktop() {
   };
 }
 
+const modeLabels: Record<Mode, string> = { rewrite: '改写', translation: '译文', original: '原文' };
+
+async function choosePdfFile(bundle: Bundle, mode: Mode, directory: string): Promise<string | null> {
+  const { remote, path } = desktop();
+  const name = `${exportBaseName(bundle, mode)}.pdf`;
+  const result = await remote.dialog.showSaveDialog(remote.getCurrentWindow(), {
+    title: t('reader.exportPdf'),
+    defaultPath: directory ? path.join(directory, name) : name,
+    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  });
+  return result.canceled ? null : result.filePath || null;
+}
+
 async function chooseFile(bundle: Bundle, mode: Mode, extension: 'md' | 'pdf', defaultPath?: string): Promise<string | null> {
+  const { remote } = desktop();
+  const result = await remote.dialog.showSaveDialog(remote.getCurrentWindow(), {
+    title: extension === 'pdf' ? '导出为 PDF' : '保存为 Markdown',
+    defaultPath: defaultPath || `${[...titleOf(bundle.entry).replace(/[\\/:*?"<>|]/g, ' ')].filter(char => char.charCodeAt(0) >= 32).join('').replace(/\s+/g, ' ').trim().slice(0, 90) || '文章'} - ${modeLabels[mode]}.${extension}`,
+    filters: [{ name: extension === 'pdf' ? 'PDF' : 'Markdown', extensions: [extension] }],
   });
   return result.canceled ? null : result.filePath || null;
 }

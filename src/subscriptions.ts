@@ -2,6 +2,7 @@ import { registerSource, ensureGroup } from './personal-library';
 import { requestUrl } from 'obsidian';
 import { feedUrl, MAX_SUBSCRIPTIONS, parseFeed, stableId, type FeedInput } from './feeds';
 import { subscriptionSchema, type State, type Subscription } from './model';
+import { fail, isLocalizedError, t } from './i18n';
 export type FeedTransport = (url: string, headers?: Record<string, string>) => Promise<{ status: number; text: string; headers?: Record<string, string> }>;
 export interface RefreshSummary { refreshed: number; changed: number; unchanged: number; failed: number; skipped: number; elapsedMs: number; bodiesChanged: boolean }
 export type RefreshOutcome = 'changed' | 'unchanged' | 'failed' | 'skipped';
@@ -29,7 +30,7 @@ export class Subscriptions {
     const response = await requestUrl({ url, method: 'GET', headers, throw: false });
     return { status: response.status, text: response.text, headers: response.headers };
   }, private onBodiesChanged: () => void = () => undefined) {}
-  private async fetch(url: string, doc: Document, conditional?: { etag?: string; lastModified?: string }) {
+  public async fetch(url: string, doc: Document, conditional?: { etag?: string; lastModified?: string }) {
     let timer: number | undefined;
     try {
       const headers: Record<string, string> = {};
@@ -39,7 +40,7 @@ export class Subscriptions {
         this.transport(url, Object.keys(headers).length ? headers : undefined),
         new Promise<never>((_, reject) => { timer = window.setTimeout(() => reject(new Error(t('error.feedTimeout'))), 20000); }),
       ]);
-      if (response.status === 304) return { name: '', entries: [], notModified: true as const, etag: conditional?.etag, lastModified: conditional?.lastModified };
+      if (response.status === 304) return { name: '', entries: [], site: undefined, image: undefined, notModified: true as const, etag: conditional?.etag, lastModified: conditional?.lastModified };
       if (response.status < 200 || response.status >= 300) throw new Error(t('error.feedUnavailable', { status: response.status }));
       const parsed = await parseFeed(response.text, url, doc);
       return { ...parsed, notModified: false as const, etag: headerValue(response.headers, 'etag'), lastModified: headerValue(response.headers, 'last-modified') };
@@ -98,11 +99,6 @@ export class Subscriptions {
     });
   }
 
-  async refresh(ids: string[], doc: Document, force = false, updated?: () => void): Promise<void> {
-    const remaining = [...ids];
-    const worker = async () => { while (remaining.length) { const id = remaining.shift(); if (id) { await this.refreshOne(id, doc, force); updated?.(); } } };
-    await Promise.all(Array.from({ length: Math.min(3, remaining.length) }, worker));
-  }
   async refresh(ids: string[], doc: Document, force = false, updated?: (done: number, total: number) => void): Promise<RefreshSummary> {
     const started = Date.now();
     const feeds = new Map(this.state().subscriptions.map(feed => [feed.id, feed]));

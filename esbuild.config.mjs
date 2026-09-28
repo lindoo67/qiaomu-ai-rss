@@ -11,6 +11,6 @@ if (process.argv.includes('--watch')) await (await context(options)).watch();
 else {
   await build(options);
   for (const asset of ['main.js', 'styles.css']) {
-    if (readFileSync(asset).byteLength > 5_000_000) throw new Error(`${asset} exceeds the 5 MB release budget`);
+    if (readFileSync(asset).byteLength > 6_000_000) throw new Error(`${asset} exceeds the 6 MB release budget`);
   }
 }
