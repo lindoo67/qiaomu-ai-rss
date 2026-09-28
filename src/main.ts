@@ -458,6 +458,10 @@ class RssSettings extends PluginSettingTab {
           for (const font of selectableFonts.concat(readingFonts.filter(f => f.id === settings.fontFamily && !selectableFonts.includes(f)))) drop.addOption(font.id, fontName(font.id));
           drop.setValue(settings.fontFamily).onChange(async value => { settings.fontFamily = readingFontSchema.parse(value); await saveReading(); this.update(); });
         }); } },
+        { name: t('settings.listFont.name'), render: setting => { setting.addDropdown(drop => {
+          for (const font of selectableFonts.concat(readingFonts.filter(f => f.id === settings.listFont && !selectableFonts.includes(f)))) drop.addOption(font.id, fontName(font.id));
+          drop.setValue(settings.listFont).onChange(async value => { settings.listFont = readingFontSchema.parse(value); await saveReading(); this.update(); });
+        }); } },
         { name: t('settings.customFont.name'), desc: t('settings.customFont.desc'), visible: () => settings.fontFamily === 'custom', render: setting => { setting.addText(text => text.setPlaceholder(t('settings.customFont.placeholder')).setValue(settings.customFont).onChange(async value => { settings.customFont = value.slice(0, 200); await saveReading(); })); } },
         { name: t('settings.fontSize'), render: setting => { setting.addDropdown(drop => {
           for (let size = 14; size <= 32; size++) drop.addOption(String(size), size + ' px');

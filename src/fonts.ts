@@ -27,6 +27,17 @@ export function fontFamily(id: ReadingFont, custom: string) {
   const font = readingFonts.find(font => font.id === id)!;
   return id === 'custom' ? `${JSON.stringify(custom.trim() || 'serif')},serif` : font.data ? `"${font.family}",serif` : font.family;
 }
+export function listFontFamily(id: ReadingFont, custom: string) {
+  // List font defaults to system sans-serif; custom user font applies only if explicitly set.
+  if (id === 'custom') return JSON.stringify(custom.trim() || 'sans-serif') + ',sans-serif';
+  return id === 'serif' ? `"Songti SC","Noto Serif CJK SC",Georgia,serif`
+    : id === 'fangsong' ? `QRS Fangsong,"Noto Serif CJK SC",serif`
+    : id === 'sourceHanSerif' ? '"Source Han Serif CN","Noto Serif CJK SC SC",serif'
+    : id === 'sourceHanSans' ? '"Source Han Sans CN","Noto Sans CJK SC",sans-serif'
+    : id === 'wenkai' ? '"LXGW WenKai GB Screen",sans-serif'
+    : id === 'zhenkai' ? '"LXGW ZhenKai GB",sans-serif'
+    : `var(--font-text),"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif`;
+}
 
 export class ReadingFonts {
   private documents = new Map<Document, Map<string, Promise<FontFace>>>();
